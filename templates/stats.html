@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="stylesheet" href="{{url_for('static',filename='styles.css')}}"/>
+    <meta charset="UTF-8">
+    <title>URL Stats</title>
+</head>
+<body id="stats">
+<table style="width: 100%">
+    <tr id="table-1">
+        <th v-for="item in items" style="color: maroon">[[item.message]]</th>
+    </tr>
+    <tr>
+        <form method="post" action="">
+            <td><input type="submit" value="Show" name="redirectBtn"></td>
+            <td><input type="submit" value="Last Min" name="lastMin"><input type="submit" value="Last Hour" name="lastHour"><input type="submit" value="Last Day" name="lastDay"></td>
+            <td><input type="submit" value="Last Min" name="lastMinBad"><input type="submit" value="Last Hour" name="lastHourBad"><input type="submit" value="Last Day" name="lastDayBad"></td>
+        </form>
+    </tr>
+    <tr>
+        <td>{{count}}</td>
+        <td>{{redir}}</td>
+        <td>{{badtime}}</td>
+    </tr>
+</table>
+<!-- Vue.js -->
+<script src="https://cdn.jsdelivr.net/npm/vue/dist/vue.js"></script>
+<script>
+    var table = new Vue({
+        el: '#table-1',
+        delimiters: ['[[',']]'],
+        data:{
+            items:[
+                { message: 'Number of registered URLs redirections'},
+                { message: 'Number of URL redirections in'},
+                { message: 'Number of bad requests in'}
+            ]
+        }
+    })
+</script>
+</body>
+</html>

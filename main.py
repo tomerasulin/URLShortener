@@ -1,9 +1,9 @@
-import re
+import re, sqlite3,string,datetime,random
 from urllib.parse import urlparse
 from flask import Flask, request,render_template, redirect
 from sqlite3 import Error
-import sqlite3,string
-import random
+from urllib.request import urlopen
+
 
 app = Flask(__name__)
 
@@ -13,20 +13,22 @@ def create_DB():
     sql_url_table = """CREATE TABLE IF NOT EXISTS URLS(
     ID INTEGER PRIMARY KEY AUTOINCREMENT,
     URL TEXT NOT NULL,
-    SHORT TEXT NOT NULL,
-    TIME DATETIME DEFAULT CURRENT_TIMESTAMP);
+    SHORT TEXT NULL,
+    TIME TEXT NOT NULL ,
+    DAY TEXT NOT NULL );
     """
-    #create a database connection
+    #create a connection
     conn = create_connection()
 
     if conn is not None:
         try:
             conn.execute(sql_url_table)
             conn.commit()
+            conn.close()
         except Error as e:
             print(e)
 
-#create a database connection to the SQLite database
+#create a connection to the SQLite database
 def create_connection():
     conn = None
     try:
@@ -35,13 +37,13 @@ def create_connection():
         print(e)
     return conn
 
-#function that randomly generate a new string in length of 'num'
+#function that randomly generate a new string for "short URL"
 def encoder(num):
     return ''.join(random.choice(string.ascii_letters+string.digits) for _ in range(num))
 
 #functino that receive a long url and check whether exists in DB
 def query_select_long_db(url):
-    #assembling the connection to DB
+    #establish the connection to DB
     conn = create_connection()
     cursor = conn.cursor()
     try:
@@ -53,17 +55,23 @@ def query_select_long_db(url):
          for row in c:          #case of already exists
              if (row == url):
                  return url
+         conn.close()
     except Error as e:
         print(e)
     return None
 
 #function that receives a long URL and check whether there is a match of a short URL in DB
 def query_select_short_db(url):
+    # establish the connection to DB
     conn = create_connection()
     cursor = conn.cursor()
     try:
+        #query DB
         cursor.execute('SELECT SHORT FROM URLS WHERE URL = ?',(url,))
         c = cursor.fetchone()
+        cursor.execute('UPDATE URLS SET TIME = ?, DAY = ? WHERE URL = ?', (datetime.datetime.now().strftime("%H:%M:%S"), datetime.datetime.now().strftime("%d"),url))
+        conn.commit()
+        conn.close()
         return ''.join(c)
     except Error as e:
         print(e)
@@ -76,8 +84,9 @@ def query_insert_db(url):
     conn = create_connection()
     cursor = conn.cursor()
     try:
-        cursor = conn.execute('INSERT INTO URLS(URL,SHORT) VALUES (?,?)',(url,short))
+        cursor = conn.execute('INSERT INTO URLS(URL,SHORT,TIME,DAY) VALUES (?,?,?,?)',(url,short, datetime.datetime.now().strftime("%H:%M:%S"),datetime.datetime.now().strftime("%d")))
         conn.commit()   #save changes
+        conn.close()
     except Error as e:
         print(e)
     return short
@@ -89,70 +98,110 @@ def get_long_url(short):
     try:
         cursor.execute('SELECT URL FROM URLS WHERE SHORT = ?',(short,))
         c = cursor.fetchone()
+        conn.close()
         return ''.join(c)
     except Error as e:
         print(e)
 
-#function that receives an URL and check whether is legal
-def bad_request(url):
-    regex = re.compile(
-        r'^(?:http|ftp)s?://'  # http:// or https://
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain...
-        r'localhost|'  # localhost...
-        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
-        r'(?::\d+)?'  # optional port
-        r'(?:/?|[/?]\S+)$', re.IGNORECASE)
-    print(re.match(regex,url))
+#function that insert into the DB the invalid URL for control
+def insert_bad_request(url):
+    conn = create_connection()
+    cursor = conn.cursor()
+    try:
+        cursor = conn.execute('INSERT INTO URLS(URL,TIME,DAY) VALUES (?,?,?)',(url,datetime.datetime.now().strftime("%H:%M:%S"),datetime.datetime.now().strftime("%d")))
+        conn.commit()   #save changes
+        conn.close()
+    except Error as e:
+        print(e)
 
-    return re.match(regex,url)
 #main page
 @app.route('/', methods=['GET', 'POST'])
 def home():
     if request.method == 'POST':
-        url = request.form.get('longURL')
+        url = request.form.get('longURL') # receiving from the HTTP request the 'long URL'
+        #insert the http scheme to the url in case is missing
         if urlparse(url).scheme == '':
             url = 'http://' + url
-        if(bad_request(url) is not None):
-            if query_select_long_db(url) is not None:
+        try:
+            #function that check if the URL is valid
+            urlopen(url)
+            if query_select_long_db(url) is not None: # check if the URL exists already in DB
                 return  render_template('mainPage.html',short_url = query_select_short_db(url))
-            return render_template('mainPage.html', short_url=query_insert_db(url))
-        return render_template(url,code=404)
+            return render_template('mainPage.html', short_url=query_insert_db(url)) # insert the new URL into DB and return his unique 'short URL'
+        except Exception as e:
+            insert_bad_request(url) #save the invalid URL
+            return render_template('mainPage.html')
     return render_template('mainPage.html')
 
 #redirect a short url to the long url
 @app.route('/<short_url>')
 def redirect_url(short_url):
-    long_url = get_long_url(short_url)
-    return redirect(long_url)
+    if request.method == 'POST':
+        long_url = get_long_url(short_url)
+        return redirect(long_url)
+    return render_template('mainPage.html')
 
 #get the DB stats , num of URLs pair, timestamp...
-@app.route('/stats')
+@app.route('/stats',methods=['GET','POST'])
 def stats_urls():
-    time_list = list()
+    count = 0
     conn = create_connection()
     cursor = conn.cursor()
     if request.method == 'POST':
-        url_redirect = request.get('URLRed')
-        url_bad_request = request.get('badReq')
+        #variables for the different requests from the user
+        url_redirect_last_min = request.form.get('lastMin')
+        url_redirect_last_hour = request.form.get('lastHour')
+        url_redirect_last_day = request.form.get('lastDay')
+        url_bad_last_min = request.form.get('lastMinBad')
+        url_bad_last_hour = request.form.get('lastHourBad')
+        url_bad_last_day = request.form.get('lastDayBad')
+        num_of_redirect = request.form.get('redirectBtn')
         try:
-            if url_redirect is not None:
-                c = cursor.execute('SELECT TIME FROM URLS')
+            if url_redirect_last_min is not None or url_redirect_last_hour is not None or url_redirect_last_day is not None: #case of the number of redirection
+                c = cursor.execute('SELECT TIME,DAY FROM URLS WHERE SHORT IS NOT NULL')
                 for row in c:
-                    if row < url_redirect:
-                        time_list.append(row)
+                    (h,m,s) = ''.join(row[0]).split(':')
+                    d = row[1]
+                    if url_redirect_last_min is not None:
+                        if datetime.datetime.now().minute > int(m) - 1 and datetime.datetime.now().minute < int(m) + 1:
+                            count += 1
+                    elif url_redirect_last_hour is not None:
+                        if datetime.datetime.now().hour > int(h) - 1 and datetime.datetime.now().hour < int(h) + 1:
+                            count += 1
+                    elif url_redirect_last_day is not None:
+                        if datetime.datetime.now().day > int(d) - 1 and datetime.datetime.now().day < int(d) + 1:
+                            count += 1
+                return render_template('stats.html', redir=count)
+            elif url_bad_last_min is not None or url_bad_last_hour is not None or url_bad_last_day is not None: # case of the bad requests
+                c = cursor.execute('SELECT TIME,DAY FROM URLS WHERE SHORT IS NULL')
+                for row in c:
+                    (h, m, s) = ''.join(row[0]).split(':')
+                    d = row[1]
+                    if url_bad_last_min is not None:
+                        if datetime.datetime.now().minute > int(m) - 1 and datetime.datetime.now().minute < int(m) + 1:
+                            count += 1
+                    elif url_bad_last_hour is not None:
+                        if datetime.datetime.now().hour > int(h) - 1 and datetime.datetime.now().hour < int(h) + 1:
+                            count += 1
+                    elif url_bad_last_day is not None:
+                        if datetime.datetime.now().day > int(d) - 1 and datetime.datetime.now().day < int(d) + 1:
+                            count += 1
+                return render_template('stats.html', badtime=count)
+            elif num_of_redirect is not None:   #case of the amount of pairs of long+short URLs
+                cursor.execute('SELECT COUNT(URL) FROM URLS WHERE SHORT IS NOT NULL')
+                c = cursor.fetchone()
+                count = c[0]
+            return render_template('stats.html', count=count)
         except Error as e:
             print(e)
-    try:
-        cursor.execute('SELECT COUNT(*) FROM URLS')
-        c = cursor.fetchone()
-        return render_template('stats.html', count=c[0], time_redirect=time_list)
-    except Error as e:
-        print(e)
+    conn.close()
+    return render_template('stats.html')
 
 if __name__ == '__main__':
     #conn = create_connection()
     #conn.execute("DROP TABLE IF EXISTS URLS")
     create_DB()
+    app.static_folder = 'static'
     app.run(debug=True)
 
 
